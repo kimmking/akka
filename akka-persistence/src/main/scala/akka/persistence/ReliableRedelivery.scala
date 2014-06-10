@@ -20,7 +20,12 @@ object ReliableRedelivery {
 
   }
 
+  @SerialVersionUID(1L)
+  case class UnconfirmedWarning(unconfirmedDeliveries: immutable.Seq[UnconfirmedDelivery])
+
   case class UnconfirmedDelivery(seqNr: Long, destination: ActorPath, msg: Any)
+
+  class MaxUnconfirmedMessagesExceededException(message: String) extends RuntimeException(message)
 
   object Internal {
     case class Delivery(destination: ActorPath, msg: Any, timestamp: Long, attempt: Int)
@@ -33,9 +38,49 @@ trait ReliableRedelivery extends PersistentActor {
   import ReliableRedelivery._
   import ReliableRedelivery.Internal._
 
-  def redeliverInterval: FiniteDuration
+  /**
+   * Interval between redelivery attempts.
+   *
+   * The default value can be configured with the
+   * `akka.persistence.at-least-once-delivery.redeliver-interval`
+   * configuration key. This method can be overridden by implementation classes to return
+   * non-default values.
+   */
+  def redeliverInterval: FiniteDuration = defaultRedeliverInterval
 
-  private var redeliverTask = {
+  private val defaultRedeliverInterval: FiniteDuration =
+    Persistence(context.system).settings.atLeastOnceDelivery.redeliverInterval
+
+  /**
+   * After this number of delivery attempts a [[ReliableRedelivery.UnconfirmedWarning]] message
+   * will be sent to `self`.
+   *
+   * The default value can be configured with the
+   * `akka.persistence.at-least-once-delivery.warn-after-number-Of-unconfirmed-attempts`
+   * configuration key. This method can be overridden by implementation classes to return
+   * non-default values.
+   */
+  def warnAfterNumberOfUnconfirmedAttempts: Int = defaultWarnAfterNumberOfUnconfirmedAttempts
+
+  private val defaultWarnAfterNumberOfUnconfirmedAttempts: Int =
+    Persistence(context.system).settings.atLeastOnceDelivery.warnAfterNumberOfUnconfirmedAttempts
+
+  /**
+   * Maximum number of unconfirmed messages that this actor is allowed to hold in memory.
+   * If this number is exceed [[#deliver]] will not accept more messages, i.e. it will throw a
+   * [[ReliableRedelivery.MaxUnconfirmedMessagesExceededException]].
+   *
+   * The default value can be configured with the
+   * `akka.persistence.at-least-once-delivery.max-unconfirmed-messages
+   * configuration key. This method can be overridden by implementation classes to return
+   * non-default values.
+   */
+  def maxUnconfirmedMessages: Int = defaultMaxUnconfirmedMessages
+
+  private val defaultMaxUnconfirmedMessages: Int =
+    Persistence(context.system).settings.atLeastOnceDelivery.maxUnconfirmedMessages
+
+  private val redeliverTask = {
     import context.dispatcher
     val interval = redeliverInterval / 2
     context.system.scheduler.schedule(interval, interval, self, RedeliveryTick)
@@ -51,12 +96,17 @@ trait ReliableRedelivery extends PersistentActor {
   }
 
   def deliver(destination: ActorPath, seqNrToMessage: Long => Any): Unit = {
+    if (unconfirmed.size >= maxUnconfirmedMessages)
+      throw new MaxUnconfirmedMessagesExceededException(
+        s"Too many unconfirmed messages, maximum allowed is [$maxUnconfirmedMessages]")
+
     val seqNr = nextDeliverySequenceNr()
-    val d = Delivery(destination, seqNrToMessage(seqNr), System.nanoTime(), attempt = 0)
+    val now = System.nanoTime()
+    val d = Delivery(destination, seqNrToMessage(seqNr), now, attempt = 0)
     if (recoveryRunning)
       unconfirmed = unconfirmed.updated(seqNr, d)
     else
-      send(seqNr, d)
+      send(seqNr, d, now)
   }
 
   // FIXME Java API for deliver
@@ -68,25 +118,30 @@ trait ReliableRedelivery extends PersistentActor {
     } else false
   }
 
+  /**
+   * Number of messages that have not been confirmed yet.
+   */
+  def numberOfUnconfirmed: Int = unconfirmed.size
+
   private def redeliverOverdue(): Unit = {
-    val iter = unconfirmed.iterator
-    val deadline = System.nanoTime() - redeliverInterval.toNanos
-    @tailrec def loop(): Unit = {
-      if (iter.hasNext) {
-        val (seqNr, delivery) = iter.next()
-        // skip all after deadline, since they are added in seqNo order 
+    val now = System.nanoTime()
+    val deadline = now - redeliverInterval.toNanos
+    var warnings = Vector.empty[UnconfirmedDelivery]
+    unconfirmed foreach {
+      case (seqNr, delivery) =>
         if (delivery.timestamp <= deadline) {
-          send(seqNr, delivery)
-          loop()
+          send(seqNr, delivery, now)
+          if (delivery.attempt == warnAfterNumberOfUnconfirmedAttempts)
+            warnings :+= UnconfirmedDelivery(seqNr, delivery.destination, delivery.msg)
         }
-      }
     }
-    loop()
+    if (warnings.nonEmpty)
+      self ! UnconfirmedWarning(warnings)
   }
 
-  private def send(seqNr: Long, d: Delivery): Unit = {
+  private def send(seqNr: Long, d: Delivery, timestamp: Long): Unit = {
     context.actorSelection(d.destination) ! d.msg
-    unconfirmed = unconfirmed.updated(seqNr, d.copy(timestamp = System.nanoTime(), attempt = d.attempt + 1))
+    unconfirmed = unconfirmed.updated(seqNr, d.copy(timestamp = timestamp, attempt = d.attempt + 1))
   }
 
   def getDeliverySnapshot: ReliableRedeliverySnapshot =
@@ -115,8 +170,4 @@ trait ReliableRedelivery extends PersistentActor {
       case RedeliveryTick ⇒ redeliverOverdue()
       case _              ⇒ super.aroundReceive(receive, message)
     }
-
-  // FIXME max redelivery attempts?
-  // FIXME redelivery failure listener?
-
 }

@@ -9,6 +9,8 @@ import com.typesafe.config._
 import akka.actor._
 import akka.testkit._
 import akka.persistence.ReliableRedelivery.ReliableRedeliverySnapshot
+import akka.persistence.ReliableRedelivery.UnconfirmedWarning
+import akka.persistence.ReliableRedelivery.UnconfirmedWarning
 
 object ReliableRedeliverySpec {
 
@@ -26,10 +28,16 @@ object ReliableRedeliverySpec {
   case object SaveSnap
   case class Snap(deliverySnapshot: ReliableRedeliverySnapshot) // typically includes some user data as well
 
-  def sndProps(name: String, redeliverInterval: FiniteDuration, destinations: Map[String, ActorPath]): Props =
-    Props(new Sender(name, redeliverInterval, destinations))
+  def senderProps(testActor: ActorRef, name: String,
+                  redeliverInterval: FiniteDuration, warnAfterNumberOfUnconfirmedAttempts: Int,
+                  destinations: Map[String, ActorPath]): Props =
+    Props(new Sender(testActor, name, redeliverInterval, warnAfterNumberOfUnconfirmedAttempts, destinations))
 
-  class Sender(name: String, override val redeliverInterval: FiniteDuration, destinations: Map[String, ActorPath])
+  class Sender(testActor: ActorRef,
+               name: String,
+               override val redeliverInterval: FiniteDuration,
+               override val warnAfterNumberOfUnconfirmedAttempts: Int,
+               destinations: Map[String, ActorPath])
     extends PersistentActor with ReliableRedelivery {
 
     override def processorId: String = name
@@ -65,12 +73,14 @@ object ReliableRedeliverySpec {
       case SaveSnap =>
         saveSnapshot(Snap(getDeliverySnapshot))
 
+      case w: UnconfirmedWarning =>
+        testActor ! w
+
     }
 
     def receiveRecover: Receive = {
       case evt: Evt ⇒ updateState(evt)
       case SnapshotOffer(_, Snap(deliverySnapshot)) =>
-        println("# got snap: " + deliverySnapshot)
         setDeliverySnapshot(deliverySnapshot)
 
     }
@@ -113,21 +123,21 @@ abstract class ReliableRedeliverySpec(config: Config) extends AkkaSpec(config) w
   import ReliableRedeliverySpec._
 
   "ReliableRedelivery" must {
-    "must deliver messages in order when nothing is lost" in {
+    "deliver messages in order when nothing is lost" in {
       val probeA = TestProbe()
       val destinations = Map("A" -> system.actorOf(destinationProps(probeA.ref)).path)
-      val snd = system.actorOf(sndProps(name, 500.millis, destinations), name)
+      val snd = system.actorOf(senderProps(testActor, name, 500.millis, 5, destinations), name)
       snd ! Req("a")
       expectMsg(ReqAck)
       probeA.expectMsg(Action(1, "a"))
       probeA.expectNoMsg(1.second)
     }
 
-    "must re-deliver lost messages" in {
+    "re-deliver lost messages" in {
       val probeA = TestProbe()
       val dst = system.actorOf(destinationProps(probeA.ref))
       val destinations = Map("A" -> system.actorOf(unreliableProps(3, dst)).path)
-      val snd = system.actorOf(sndProps(name, 500.millis, destinations), name)
+      val snd = system.actorOf(senderProps(testActor, name, 500.millis, 5, destinations), name)
       snd ! Req("a-1")
       expectMsg(ReqAck)
       probeA.expectMsg(Action(1, "a-1"))
@@ -147,11 +157,11 @@ abstract class ReliableRedeliverySpec(config: Config) extends AkkaSpec(config) w
       probeA.expectNoMsg(1.second)
     }
 
-    "must re-deliver lost messages after restart" in {
+    "re-deliver lost messages after restart" in {
       val probeA = TestProbe()
       val dst = system.actorOf(destinationProps(probeA.ref))
       val destinations = Map("A" -> system.actorOf(unreliableProps(3, dst)).path)
-      val snd = system.actorOf(sndProps(name, 500.millis, destinations), name)
+      val snd = system.actorOf(senderProps(testActor, name, 500.millis, 5, destinations), name)
       snd ! Req("a-1")
       expectMsg(ReqAck)
       probeA.expectMsg(Action(1, "a-1"))
@@ -180,11 +190,11 @@ abstract class ReliableRedeliverySpec(config: Config) extends AkkaSpec(config) w
       probeA.expectNoMsg(1.second)
     }
 
-    "must restore state from snapshot" in {
+    "restore state from snapshot" in {
       val probeA = TestProbe()
       val dst = system.actorOf(destinationProps(probeA.ref))
       val destinations = Map("A" -> system.actorOf(unreliableProps(3, dst)).path)
-      val snd = system.actorOf(sndProps(name, 500.millis, destinations), name)
+      val snd = system.actorOf(senderProps(testActor, name, 500.millis, 5, destinations), name)
       snd ! Req("a-1")
       expectMsg(ReqAck)
       probeA.expectMsg(Action(1, "a-1"))
@@ -214,7 +224,26 @@ abstract class ReliableRedeliverySpec(config: Config) extends AkkaSpec(config) w
       probeA.expectNoMsg(1.second)
     }
 
-    "must re-deliver many lost messages" in {
+    "warn about unconfirmed messages" in {
+      val probeA = TestProbe()
+      val probeB = TestProbe()
+      val destinations = Map("A" -> probeA.ref.path, "B" -> probeB.ref.path)
+      val snd = system.actorOf(senderProps(testActor, name, 500.millis, 3, destinations), name)
+      snd ! Req("a-1")
+      snd ! Req("b-1")
+      snd ! Req("b-2")
+      expectMsg(ReqAck)
+      expectMsg(ReqAck)
+      expectMsg(ReqAck)
+      val unconfirmed = receiveWhile(3.seconds) {
+        case UnconfirmedWarning(unconfirmed) => unconfirmed
+      }.flatten
+      unconfirmed.map(_.destination).toSet should be(Set(probeA.ref.path, probeB.ref.path))
+      unconfirmed.map(_.msg).toSet should be(Set(Action(1, "a-1"), Action(2, "b-1"), Action(3, "b-2")))
+      system.stop(snd)
+    }
+
+    "re-deliver many lost messages" in {
       val probeA = TestProbe()
       val probeB = TestProbe()
       val probeC = TestProbe()
@@ -225,7 +254,7 @@ abstract class ReliableRedeliverySpec(config: Config) extends AkkaSpec(config) w
         "A" -> system.actorOf(unreliableProps(2, dstA)).path,
         "B" -> system.actorOf(unreliableProps(5, dstB)).path,
         "C" -> system.actorOf(unreliableProps(3, dstC)).path)
-      val snd = system.actorOf(sndProps(name, 500.millis, destinations), name)
+      val snd = system.actorOf(senderProps(testActor, name, 500.millis, 5, destinations), name)
       val N = 100
       for (n ← 1 to N) {
         snd ! Req("a-" + n)
