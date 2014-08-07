@@ -17,48 +17,46 @@ import scala.runtime.BoxedUnit;
 import java.util.concurrent.TimeUnit;
 
 public class ViewExample {
-  public static class ExampleProcessor extends AbstractProcessor {
+  public static class ExamplePersistentActor extends AbstractPersistentActor {
+    private int count = 1;
+
     @Override
-    public String processorId() {
-      return "processor-5";
+    public String persistenceId() { return "sample-id-4"; }
+
+    @Override
+    public PartialFunction<Object, BoxedUnit> receiveCommand() {
+      return ReceiveBuilder.
+        match(String.class, s -> {
+          System.out.println(String.format("persistentActor received %s (nr = %d)", s, count));
+          persist(s + count, evt -> {
+            count += 1;
+          });
+        }).
+        build();
     }
 
-    public ExampleProcessor() {
-      receive(ReceiveBuilder.
-        match(Persistent.class,
-          p -> System.out.println(String.format("processor received %s (sequence nr = %d)",
-            p.payload(),
-            p.sequenceNr()))).build()
-      );
+    @Override
+    public PartialFunction<Object, BoxedUnit> receiveRecover() {
+      return ReceiveBuilder.
+        match(String.class, s -> count += 1).
+        build();
     }
   }
 
-  public static class ExampleView extends AbstractView {
-    private final ActorRef destination = context().actorOf(Props.create(ExampleDestination.class));
-    private final ActorRef channel     = context().actorOf(Channel.props("channel"));
+  public static class ExampleView extends AbstractPersistentView {
 
     private int numReplicated = 0;
 
-    @Override
-    public String viewId() {
-      return "view-5";
-    }
-
-    @Override
-    public String processorId() {
-      return "processor-5";
-    }
+    @Override public String persistenceId() { return "sample-id-4"; }
+    @Override public String viewId() { return "sample-view-id-4"; }
 
     public ExampleView() {
       receive(ReceiveBuilder.
-        match(Persistent.class, p -> {
+        match(Object.class, m -> isPersistent(), msg -> {
           numReplicated += 1;
-          System.out.println(String.format("view received %s (sequence nr = %d, num replicated = %d)",
-            p.payload(),
-            p.sequenceNr(),
+          System.out.println(String.format("view received %s (num replicated = %d)",
+            msg,
             numReplicated));
-          channel.tell(Deliver.create(p.withPayload("replicated-" + p.payload()), destination.path()),
-            self());
         }).
         match(SnapshotOffer.class, so -> {
           numReplicated = (Integer) so.snapshot();
@@ -71,30 +69,16 @@ public class ViewExample {
     }
   }
 
-  public static class ExampleDestination extends AbstractActor {
-
-    public ExampleDestination() {
-      receive(ReceiveBuilder.
-        match(ConfirmablePersistent.class, cp -> {
-          System.out.println(String.format("destination received %s (sequence nr = %s)",
-            cp.payload(),
-            cp.sequenceNr()));
-          cp.confirm();
-        }).build()
-      );
-    }
-  }
-
   public static void main(String... args) throws Exception {
     final ActorSystem system = ActorSystem.create("example");
-    final ActorRef processor = system.actorOf(Props.create(ExampleProcessor.class));
+    final ActorRef persistentActor = system.actorOf(Props.create(ExamplePersistentActor.class));
     final ActorRef view = system.actorOf(Props.create(ExampleView.class));
 
     system.scheduler()
       .schedule(Duration.Zero(),
         Duration.create(2, TimeUnit.SECONDS),
-        processor,
-        Persistent.create("scheduled"),
+        persistentActor,
+        "scheduled",
         system.dispatcher(),
         null);
     system.scheduler()

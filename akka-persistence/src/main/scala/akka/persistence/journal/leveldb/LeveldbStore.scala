@@ -36,10 +36,6 @@ private[persistence] trait LeveldbStore extends Actor with LeveldbIdMapping with
     if (nativeLeveldb) org.fusesource.leveldbjni.JniDBFactory.factory
     else org.iq80.leveldb.impl.Iq80DBFactory.factory
 
-  // TODO: support migration of processor and channel ids
-  // needed if default processor and channel ids are used
-  // (actor paths, which contain deployment information).
-
   val serialization = SerializationExtension(context.system)
 
   import Key._
@@ -52,13 +48,13 @@ private[persistence] trait LeveldbStore extends Actor with LeveldbIdMapping with
 
   def deleteMessages(messageIds: immutable.Seq[PersistentId], permanent: Boolean) = withBatch { batch ⇒
     messageIds foreach { messageId ⇒
-      if (permanent) batch.delete(keyToBytes(Key(numericId(messageId.processorId), messageId.sequenceNr, 0)))
-      else batch.put(keyToBytes(deletionKey(numericId(messageId.processorId), messageId.sequenceNr)), Array.emptyByteArray)
+      if (permanent) batch.delete(keyToBytes(Key(numericId(messageId.persistenceId), messageId.sequenceNr, 0)))
+      else batch.put(keyToBytes(deletionKey(numericId(messageId.persistenceId), messageId.sequenceNr)), Array.emptyByteArray)
     }
   }
 
-  def deleteMessagesTo(processorId: String, toSequenceNr: Long, permanent: Boolean) = withBatch { batch ⇒
-    val nid = numericId(processorId)
+  def deleteMessagesTo(persistenceId: String, toSequenceNr: Long, permanent: Boolean) = withBatch { batch ⇒
+    val nid = numericId(persistenceId)
 
     // seek to first existing message
     val fromSequenceNr = withIterator { iter ⇒
@@ -101,13 +97,13 @@ private[persistence] trait LeveldbStore extends Actor with LeveldbIdMapping with
   def persistentFromBytes(a: Array[Byte]): PersistentRepr = serialization.deserialize(a, classOf[PersistentRepr]).get
 
   private def addToMessageBatch(persistent: PersistentRepr, batch: WriteBatch): Unit = {
-    val nid = numericId(persistent.processorId)
+    val nid = numericId(persistent.persistenceId)
     batch.put(keyToBytes(counterKey(nid)), counterToBytes(persistent.sequenceNr))
     batch.put(keyToBytes(Key(nid, persistent.sequenceNr, 0)), persistentToBytes(persistent))
   }
 
   private def addToConfirmationBatch(confirmation: PersistentConfirmation, batch: WriteBatch): Unit = {
-    val npid = numericId(confirmation.processorId)
+    val npid = numericId(confirmation.persistenceId)
     val ncid = numericId(confirmation.channelId)
     batch.put(keyToBytes(Key(npid, confirmation.sequenceNr, ncid)), confirmation.channelId.getBytes("UTF-8"))
   }
@@ -132,15 +128,15 @@ class SharedLeveldbStore extends { val configPath = "akka.persistence.journal.le
   import AsyncWriteTarget._
 
   def receive = {
-    case WriteMessages(msgs)                        ⇒ sender ! writeMessages(msgs)
-    case WriteConfirmations(cnfs)                   ⇒ sender ! writeConfirmations(cnfs)
-    case DeleteMessages(messageIds, permanent)      ⇒ sender ! deleteMessages(messageIds, permanent)
-    case DeleteMessagesTo(pid, tsnr, permanent)     ⇒ sender ! deleteMessagesTo(pid, tsnr, permanent)
-    case ReadHighestSequenceNr(pid, fromSequenceNr) ⇒ sender ! readHighestSequenceNr(numericId(pid))
+    case WriteMessages(msgs)                        ⇒ sender() ! writeMessages(msgs)
+    case WriteConfirmations(cnfs)                   ⇒ sender() ! writeConfirmations(cnfs)
+    case DeleteMessages(messageIds, permanent)      ⇒ sender() ! deleteMessages(messageIds, permanent)
+    case DeleteMessagesTo(pid, tsnr, permanent)     ⇒ sender() ! deleteMessagesTo(pid, tsnr, permanent)
+    case ReadHighestSequenceNr(pid, fromSequenceNr) ⇒ sender() ! readHighestSequenceNr(numericId(pid))
     case ReplayMessages(pid, fromSnr, toSnr, max) ⇒
-      Try(replayMessages(numericId(pid), fromSnr, toSnr, max)(sender ! _)) match {
-        case Success(max)   ⇒ sender ! ReplaySuccess
-        case Failure(cause) ⇒ sender ! ReplayFailure(cause)
+      Try(replayMessages(numericId(pid), fromSnr, toSnr, max)(sender() ! _)) match {
+        case Success(max)   ⇒ sender() ! ReplaySuccess
+        case Failure(cause) ⇒ sender() ! ReplayFailure(cause)
       }
   }
 }

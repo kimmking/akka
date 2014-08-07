@@ -36,6 +36,7 @@ import akka.persistence.JournalProtocol._
  *                    made after the configured timeout.
  */
 @SerialVersionUID(1L)
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 final case class PersistentChannelSettings(
   val redeliverMax: Int = 5,
   val redeliverInterval: FiniteDuration = 5.seconds,
@@ -82,12 +83,19 @@ final case class PersistentChannelSettings(
     copy(pendingConfirmationsMin = pendingConfirmationsMin)
 
   /**
+   * Java API.
+   */
+  def withIdleTimeout(idleTimeout: FiniteDuration): PersistentChannelSettings =
+    copy(idleTimeout = idleTimeout)
+
+  /**
    * Converts this configuration object to [[ChannelSettings]].
    */
   def toChannelSettings: ChannelSettings =
     ChannelSettings(redeliverMax, redeliverInterval, redeliverFailureListener)
 }
 
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 object PersistentChannelSettings {
   /**
    * Java API.
@@ -99,11 +107,18 @@ object PersistentChannelSettings {
  * Resets a [[PersistentChannel]], forcing it to redeliver all unconfirmed persistent
  * messages. This does not affect writing [[Deliver]] requests.
  */
-case object Reset
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
+case object Reset {
+  /**
+   * Java API.
+   */
+  def getInstance() = this
+}
 
 /**
  * Exception thrown by a [[PersistentChannel]] child actor to re-initiate delivery.
  */
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 class ResetException extends AkkaException("Channel reset on application request")
 
 /**
@@ -124,6 +139,7 @@ class ResetException extends AkkaException("Channel reset on application request
  * or not (see `replyPersistent` parameter in [[PersistentChannelSettings]]). In case of success, the channel
  * replies with the contained [[Persistent]] message, otherwise with a [[PersistenceFailure]] message.
  */
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 final class PersistentChannel private[akka] (_channelId: Option[String], channelSettings: PersistentChannelSettings) extends Actor {
   private val id = _channelId match {
     case Some(cid) ⇒ cid
@@ -144,6 +160,7 @@ final class PersistentChannel private[akka] (_channelId: Option[String], channel
   }
 }
 
+@deprecated("Channel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 object PersistentChannel {
   /**
    * Returns a channel actor configuration object for creating a [[PersistentChannel]] with a
@@ -183,13 +200,16 @@ object PersistentChannel {
 /**
  * Plugin API.
  */
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 final case class DeliveredByPersistentChannel(
   channelId: String,
   persistentSequenceNr: Long,
   deliverySequenceNr: Long = 0L,
   channel: ActorRef = null) extends Delivered with PersistentId {
 
-  def processorId: String = channelId
+  override def persistenceId: String = channelId
+  @deprecated("Use persistenceId.", since = "2.3.4")
+  override def processorId = persistenceId
   def sequenceNr: Long = persistentSequenceNr
   def update(deliverySequenceNr: Long, channel: ActorRef): DeliveredByPersistentChannel =
     copy(deliverySequenceNr = deliverySequenceNr, channel = channel)
@@ -198,6 +218,7 @@ final case class DeliveredByPersistentChannel(
 /**
  * INTERNAL API.
  */
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 private[persistence] class DeliveredByPersistentChannelBatching(journal: ActorRef, settings: PersistenceSettings) extends Actor {
   private val publish = settings.internal.publishConfirmations
   private val batchMax = settings.journal.maxConfirmationBatchSize
@@ -237,29 +258,30 @@ private[persistence] class DeliveredByPersistentChannelBatching(journal: ActorRe
 /**
  * Writes [[Deliver]] requests to the journal.
  */
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 private class RequestWriter(channelId: String, channelSettings: PersistentChannelSettings, reader: ActorRef) extends Processor {
   import RequestWriter._
   import channelSettings._
 
   private val cbJournal = extension.confirmationBatchingJournalForChannel(channelId)
 
-  override val processorId = channelId
+  override val persistenceId = channelId
 
   def receive = {
     case p @ Persistent(Deliver(wrapped: PersistentRepr, _), _) ⇒
-      if (!recoveryRunning && wrapped.processorId != PersistentRepr.Undefined) {
+      if (!recoveryRunning && wrapped.persistenceId != PersistentRepr.Undefined) {
         // Write a delivery confirmation to the journal so that replayed Deliver
         // requests from a sending processor are not persisted again. Replaying
         // Deliver requests is now the responsibility of this processor
         // and confirmation by destination is done to the wrapper p.sequenceNr.
-        cbJournal ! DeliveredByChannel(wrapped.processorId, channelId, wrapped.sequenceNr)
+        cbJournal ! DeliveredByChannel(wrapped.persistenceId, channelId, wrapped.sequenceNr)
       }
 
       if (!recoveryRunning && replyPersistent)
-        sender ! wrapped
+        sender() ! wrapped
 
     case p: PersistenceFailure ⇒
-      if (replyPersistent) sender ! p
+      if (replyPersistent) sender() ! p
   }
 
   override protected[akka] def aroundReceive(receive: Receive, message: Any): Unit = {
@@ -281,6 +303,7 @@ private class RequestWriter(channelId: String, channelSettings: PersistentChanne
   }
 }
 
+@deprecated("Channel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 private object RequestWriter {
   case object RequestsWritten
 }
@@ -295,6 +318,7 @@ private object RequestWriter {
  *
  * @see [[PersistentChannel]]
  */
+@deprecated("PersistentChannel will be removed, see `akka.persistence.AtLeastOnceDelivery` instead.", since = "2.3.4")
 private class RequestReader(channelId: String, channelSettings: PersistentChannelSettings) extends Actor with Recovery {
   import RequestWriter._
   import channelSettings._
@@ -341,8 +365,7 @@ private class RequestReader(channelId: String, channelSettings: PersistentChanne
     onReplayComplete()
   }
 
-  def processorId: String =
-    channelId
+  override def persistenceId: String = channelId
 
   def snapshotterId: String =
     s"${channelId}-reader"
@@ -368,7 +391,7 @@ private class RequestReader(channelId: String, channelSettings: PersistentChanne
 
   private def onReadRequest(): Unit = if (_currentState == idle) {
     _currentState = replayStarted(await = false)
-    dbJournal ! ReplayMessages(lastSequenceNr + 1L, Long.MaxValue, pendingConfirmationsMax - numPending, processorId, self)
+    dbJournal ! ReplayMessages(lastSequenceNr + 1L, Long.MaxValue, pendingConfirmationsMax - numPending, persistenceId, self)
   }
 
   /**

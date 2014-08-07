@@ -4,14 +4,17 @@
 
 package docs.persistence;
 
+import akka.actor.ActorPath;
 import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.actor.Props;
 import akka.actor.UntypedActor;
+import akka.japi.Function;
 import akka.japi.Procedure;
 import akka.persistence.*;
 import scala.Option;
 import scala.concurrent.duration.Duration;
+import java.io.Serializable;
 
 import java.util.concurrent.TimeUnit;
 
@@ -22,9 +25,9 @@ public class PersistenceDocTest {
     public interface SomeOtherMessage {}
 
     public interface ProcessorMethods {
-        //#processor-id
-        public String processorId();
-        //#processor-id
+        //#persistence-id
+        public String persistenceId();
+        //#persistence-id
         //#recovery-status
         public boolean recoveryRunning();
         public boolean recoveryFinished();
@@ -86,7 +89,7 @@ public class PersistenceDocTest {
     };
 
     static Object o2 = new Object() {
-        abstract class MyProcessor1 extends UntypedProcessor {
+        abstract class MyProcessor1 extends UntypedPersistentActor {
             //#recover-on-start-disabled
             @Override
             public void preStart() {}
@@ -98,7 +101,7 @@ public class PersistenceDocTest {
             //#recover-on-restart-disabled
         }
 
-        abstract class MyProcessor2 extends UntypedProcessor {
+        abstract class MyProcessor2 extends UntypedPersistentActor {
             //#recover-on-start-custom
             @Override
             public void preStart() {
@@ -107,7 +110,7 @@ public class PersistenceDocTest {
             //#recover-on-start-custom
         }
 
-        abstract class MyProcessor3 extends UntypedProcessor {
+        abstract class MyProcessor3 extends UntypedPersistentActor {
             //#deletion
             @Override
             public void preRestart(Throwable reason, Option<Object> message) {
@@ -119,23 +122,37 @@ public class PersistenceDocTest {
             //#deletion
         }
 
-        class MyProcessor4 extends UntypedProcessor implements ProcessorMethods {
-            //#processor-id-override
+        class MyProcessor4 extends UntypedPersistentActor implements ProcessorMethods {
+            //#persistence-id-override
             @Override
-            public String processorId() {
-                return "my-stable-processor-id";
+            public String persistenceId() {
+                return "my-stable-persistence-id";
             }
-            //#processor-id-override
+            //#persistence-id-override
             @Override
-            public void onReceive(Object message) throws Exception {}
+            public void onReceiveRecover(Object message) throws Exception {}
+            @Override
+            public void onReceiveCommand(Object message) throws Exception {}
         }
         
-        class MyProcessor5 extends UntypedProcessor {
+        class MyProcessor5 extends UntypedPersistentActor {
+            @Override
+            public String persistenceId() { return "persistence-id"; }
+
             //#recovery-completed
-            public void onReceive(Object message) throws Exception {
-                if (message instanceof RecoveryCompleted) {
-                    recoveryCompleted();
-                    getContext().become(active);
+          
+            @Override
+            public void onReceiveRecover(Object message) {
+	      if (message instanceof RecoveryCompleted) {
+	          recoveryCompleted();
+	      }
+              // ...
+            }
+            
+            @Override
+            public void onReceiveCommand(Object message) throws Exception {
+                if (message instanceof String) {
+                  // ...
                 } else {
                     unhandled(message);
                 }
@@ -146,19 +163,105 @@ public class PersistenceDocTest {
                 // ...
             }
             
-            Procedure<Object> active = new Procedure<Object>() {
-              @Override
-              public void apply(Object message) {
-                if (message instanceof Persistent) {
-                    // ...
-                }
-                else {
-                    unhandled(message);
-                }
-              }
-            };
             //#recovery-completed
         }
+    };
+    
+    static Object atLeastOnceExample = new Object() {
+      //#at-least-once-example
+      
+      class Msg implements Serializable {
+        public final long deliveryId;
+        public final String s;
+        
+        public Msg(long deliveryId, String s) {
+          this.deliveryId = deliveryId;
+          this.s = s;
+        }
+      }
+      
+      class Confirm implements Serializable {
+        public final long deliveryId;
+        
+        public Confirm(long deliveryId) {
+          this.deliveryId = deliveryId;
+        }
+      }
+      
+  
+      class MsgSent implements Serializable {
+        public final String s;
+        
+        public MsgSent(String s) {
+          this.s = s;
+        }
+      }
+      class MsgConfirmed implements Serializable {
+        public final long deliveryId;
+        
+        public MsgConfirmed(long deliveryId) {
+          this.deliveryId = deliveryId;
+        }
+      }
+      
+      class MyPersistentActor extends UntypedPersistentActorWithAtLeastOnceDelivery {
+        private final ActorPath destination;
+
+        public MyPersistentActor(ActorPath destination) {
+            this.destination = destination;
+        }
+
+        public void onReceiveCommand(Object message) {
+          if (message instanceof String) {
+            String s = (String) message;
+            persist(new MsgSent(s), new Procedure<MsgSent>() {
+              public void apply(MsgSent evt) {
+                updateState(evt);
+              }
+            });
+          } else if (message instanceof Confirm) {
+            Confirm confirm = (Confirm) message;
+            persist(new MsgConfirmed(confirm.deliveryId), new Procedure<MsgConfirmed>() {
+              public void apply(MsgConfirmed evt) {
+                updateState(evt);
+              }
+            });
+          } else {
+            unhandled(message);
+          }
+        }
+        
+        public void onReceiveRecover(Object event) {
+          updateState(event);
+        }
+        
+        void updateState(Object event) {
+          if (event instanceof MsgSent) {
+            final MsgSent evt = (MsgSent) event;
+            deliver(destination, new Function<Long, Object>() {
+              public Object apply(Long deliveryId) {
+                return new Msg(deliveryId, evt.s);
+              }
+            });
+          } else if (event instanceof MsgConfirmed) {
+            final MsgConfirmed evt = (MsgConfirmed) event;
+            confirmDelivery(evt.deliveryId);
+          }
+        }
+      }
+
+      class MyDestination extends UntypedActor {
+        public void onReceive(Object message) throws Exception {
+          if (message instanceof Msg) {
+            Msg msg = (Msg) message;
+            // ...
+            getSender().tell(new Confirm(msg.deliveryId), getSelf());
+          } else {
+            unhandled(message);
+          }
+        }
+      }
+      //#at-least-once-example
     };
 
     static Object o3 = new Object() {
@@ -357,6 +460,9 @@ public class PersistenceDocTest {
     static Object o8 = new Object() {
         //#reliable-event-delivery
         class MyPersistentActor extends UntypedPersistentActor {
+            @Override
+            public String persistenceId() { return "some-persistence-id"; }
+
             private ActorRef destination;
             private ActorRef channel;
 
@@ -395,6 +501,8 @@ public class PersistenceDocTest {
     static Object o9 = new Object() {
         //#persist-async
         class MyPersistentActor extends UntypedPersistentActor {
+            @Override
+            public String persistenceId() { return "some-persistence-id"; }
 
             @Override
             public void onReceiveRecover(Object msg) {
@@ -442,6 +550,8 @@ public class PersistenceDocTest {
     static Object o10 = new Object() {
         //#defer
         class MyPersistentActor extends UntypedPersistentActor {
+            @Override
+            public String persistenceId() { return "some-persistence-id"; }
 
             @Override
             public void onReceiveRecover(Object msg) {
@@ -486,16 +596,21 @@ public class PersistenceDocTest {
 
     static Object o11 = new Object() {
         //#view
-        class MyView extends UntypedView {
+        class MyView extends UntypedPersistentView {
             @Override
-            public String processorId() {
-                return "some-processor-id";
-            }
+            public String persistenceId() { return "some-persistence-id"; }
+            
+            @Override
+            public String viewId() { return "my-stable-persistence-view-id"; }
 
             @Override
             public void onReceive(Object message) throws Exception {
-                if (message instanceof Persistent) {
-                    // ...
+                if (isPersistent()) {
+                    // handle message from Journal...
+                } else if (message instanceof String) {
+                    // handle message from user...
+                } else {
+                  unhandled(message);
                 }
             }
         }

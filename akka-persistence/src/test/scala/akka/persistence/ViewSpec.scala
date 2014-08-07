@@ -3,23 +3,26 @@
  */
 package akka.persistence
 
-import scala.concurrent.duration._
-
+import akka.actor._
+import akka.persistence.JournalProtocol.ReplayMessages
+import akka.testkit._
 import com.typesafe.config.Config
 
-import akka.actor._
-import akka.testkit._
-import akka.persistence.JournalProtocol.ReplayMessages
+import scala.concurrent.duration._
 
 object ViewSpec {
-  class TestProcessor(name: String, probe: ActorRef) extends NamedProcessor(name) {
-    def receive = {
-      case Persistent(payload, sequenceNr) ⇒
-        probe ! s"${payload}-${sequenceNr}"
+  private class TestPersistentActor(name: String, probe: ActorRef) extends NamedPersistentActor(name) {
+    def receiveCommand = {
+      case msg ⇒
+        persist(msg) { m ⇒ probe ! s"${m}-${lastSequenceNr}" }
+    }
+
+    override def receiveRecover: Receive = {
+      case _ ⇒
     }
   }
 
-  class TestView(name: String, probe: ActorRef, interval: FiniteDuration, var failAt: Option[String]) extends View {
+  private class TestView(name: String, probe: ActorRef, interval: FiniteDuration, var failAt: Option[String]) extends View {
     def this(name: String, probe: ActorRef, interval: FiniteDuration) =
       this(name, probe, interval, None)
 
@@ -49,8 +52,8 @@ object ViewSpec {
     }
   }
 
-  class PassiveTestView(name: String, probe: ActorRef, var failAt: Option[String]) extends View {
-    override val processorId: String = name
+  private class PassiveTestView(name: String, probe: ActorRef, var failAt: Option[String]) extends View {
+    override val persistenceId: String = name
 
     override def autoUpdate: Boolean = false
     override def autoUpdateReplayMax: Long = 0L // no message replay during initial recovery
@@ -70,10 +73,11 @@ object ViewSpec {
       super.postRestart(reason)
       failAt = None
     }
+
   }
 
-  class ActiveTestView(name: String, probe: ActorRef) extends View {
-    override val processorId: String = name
+  private class ActiveTestView(name: String, probe: ActorRef) extends View {
+    override val persistenceId: String = name
     override def autoUpdateInterval: FiniteDuration = 50.millis
     override def autoUpdateReplayMax: Long = 2
 
@@ -83,7 +87,7 @@ object ViewSpec {
     }
   }
 
-  class TestDestination(probe: ActorRef) extends Actor {
+  private class TestDestination(probe: ActorRef) extends Actor {
     def receive = {
       case cp @ ConfirmablePersistent(payload, sequenceNr, _) ⇒
         cp.confirm()
@@ -91,9 +95,9 @@ object ViewSpec {
     }
   }
 
-  class EmittingView(name: String, destination: ActorRef) extends View {
+  private class EmittingView(name: String, destination: ActorRef) extends View {
+    override val persistenceId: String = name
     override def autoUpdateInterval: FiniteDuration = 100.milliseconds.dilated(context.system)
-    override val processorId: String = name
 
     val channel = context.actorOf(Channel.props(s"${name}-channel"))
 
@@ -105,10 +109,11 @@ object ViewSpec {
     }
   }
 
-  class SnapshottingView(name: String, probe: ActorRef) extends View {
-    override def autoUpdateInterval: FiniteDuration = 100.microseconds.dilated(context.system)
-    override val processorId: String = name
+  private class SnapshottingView(name: String, probe: ActorRef) extends View {
+    override val persistenceId: String = name
     override val viewId: String = s"${name}-replicator"
+
+    override def autoUpdateInterval: FiniteDuration = 100.microseconds.dilated(context.system)
 
     var last: String = _
 
@@ -132,9 +137,9 @@ object ViewSpec {
 }
 
 abstract class ViewSpec(config: Config) extends AkkaSpec(config) with PersistenceSpec with ImplicitSender {
-  import ViewSpec._
+  import akka.persistence.ViewSpec._
 
-  var processor: ActorRef = _
+  var persistor: ActorRef = _
   var view: ActorRef = _
 
   var processorProbe: TestProbe = _
@@ -146,16 +151,16 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
     processorProbe = TestProbe()
     viewProbe = TestProbe()
 
-    processor = system.actorOf(Props(classOf[TestProcessor], name, processorProbe.ref))
-    processor ! Persistent("a")
-    processor ! Persistent("b")
+    persistor = system.actorOf(Props(classOf[TestPersistentActor], name, processorProbe.ref))
+    persistor ! "a"
+    persistor ! "b"
 
     processorProbe.expectMsg("a-1")
     processorProbe.expectMsg("b-2")
   }
 
   override protected def afterEach(): Unit = {
-    system.stop(processor)
+    system.stop(persistor)
     system.stop(view)
     super.afterEach()
   }
@@ -179,7 +184,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       view = system.actorOf(Props(classOf[TestView], name, viewProbe.ref))
       viewProbe.expectMsg("replicated-a-1")
       viewProbe.expectMsg("replicated-b-2")
-      processor ! Persistent("c")
+      persistor ! "c"
       viewProbe.expectMsg("replicated-c-3")
     }
     "run updates at specified interval" in {
@@ -188,7 +193,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       viewProbe.expectMsg("replicated-a-1")
       viewProbe.expectMsg("replicated-b-2")
       // live updates takes 5 seconds to replicate
-      processor ! Persistent("c")
+      persistor ! "c"
       viewProbe.expectNoMsg(1.second)
       viewProbe.expectMsg("replicated-c-3")
     }
@@ -196,7 +201,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       view = system.actorOf(Props(classOf[TestView], name, viewProbe.ref, 5.seconds))
       viewProbe.expectMsg("replicated-a-1")
       viewProbe.expectMsg("replicated-b-2")
-      processor ! Persistent("c")
+      persistor ! "c"
       processorProbe.expectMsg("c-3")
       view ! Update(await = false)
       viewProbe.expectMsg("replicated-c-3")
@@ -205,7 +210,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       view = system.actorOf(Props(classOf[TestView], name, viewProbe.ref, 5.seconds))
       viewProbe.expectMsg("replicated-a-1")
       viewProbe.expectMsg("replicated-b-2")
-      processor ! Persistent("c")
+      persistor ! "c"
       processorProbe.expectMsg("c-3")
       view ! Update(await = true)
       view ! "get"
@@ -220,7 +225,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       viewProbe.expectMsg("replicated-b-2")
     }
     "run updates again on failure during an update cycle" in {
-      processor ! Persistent("c")
+      persistor ! "c"
       processorProbe.expectMsg("c-3")
       view = system.actorOf(Props(classOf[TestView], name, viewProbe.ref, 5.seconds, Some("b")))
       viewProbe.expectMsg("replicated-a-1")
@@ -229,10 +234,10 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       viewProbe.expectMsg("replicated-c-3")
     }
     "run size-limited updates on user request" in {
-      processor ! Persistent("c")
-      processor ! Persistent("d")
-      processor ! Persistent("e")
-      processor ! Persistent("f")
+      persistor ! "c"
+      persistor ! "d"
+      persistor ! "e"
+      persistor ! "f"
 
       processorProbe.expectMsg("c-3")
       processorProbe.expectMsg("d-4")
@@ -256,8 +261,8 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
     "run size-limited updates automatically" in {
       val replayProbe = TestProbe()
 
-      processor ! Persistent("c")
-      processor ! Persistent("d")
+      persistor ! "c"
+      persistor ! "d"
 
       processorProbe.expectMsg("c-3")
       processorProbe.expectMsg("d-4")
@@ -292,7 +297,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       awaitConfirmation(confirmProbe)
 
       view ! "restart"
-      processor ! Persistent("c")
+      persistor ! "c"
 
       destinationProbe.expectMsg("emitted-c-3")
       awaitConfirmation(confirmProbe)
@@ -304,7 +309,7 @@ abstract class ViewSpec(config: Config) extends AkkaSpec(config) with Persistenc
       view ! "snap"
       viewProbe.expectMsg("snapped")
       view ! "restart"
-      processor ! Persistent("c")
+      persistor ! "c"
       viewProbe.expectMsg("replicated-b-2")
       viewProbe.expectMsg("replicated-c-3")
     }

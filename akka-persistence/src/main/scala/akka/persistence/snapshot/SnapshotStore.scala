@@ -22,15 +22,15 @@ trait SnapshotStore extends Actor {
   private val publish = extension.settings.internal.publishPluginCommands
 
   final def receive = {
-    case LoadSnapshot(processorId, criteria, toSequenceNr) ⇒
-      val p = sender
-      loadAsync(processorId, criteria.limit(toSequenceNr)) map {
+    case LoadSnapshot(persistenceId, criteria, toSequenceNr) ⇒
+      val p = sender()
+      loadAsync(persistenceId, criteria.limit(toSequenceNr)) map {
         sso ⇒ LoadSnapshotResult(sso, toSequenceNr)
       } recover {
         case e ⇒ LoadSnapshotResult(None, toSequenceNr)
-      } pipeTo (p)
+      } pipeTo p
     case SaveSnapshot(metadata, snapshot) ⇒
-      val p = sender
+      val p = sender()
       val md = metadata.copy(timestamp = System.currentTimeMillis)
       saveAsync(md, snapshot) map {
         _ ⇒ SaveSnapshotSuccess(md)
@@ -39,15 +39,15 @@ trait SnapshotStore extends Actor {
       } to (self, p)
     case evt @ SaveSnapshotSuccess(metadata) ⇒
       saved(metadata)
-      sender ! evt // sender is processor
+      sender() ! evt // sender is persistentActor
     case evt @ SaveSnapshotFailure(metadata, _) ⇒
       delete(metadata)
-      sender ! evt // sender is processor
+      sender() ! evt // sender is persistentActor
     case d @ DeleteSnapshot(metadata) ⇒
       delete(metadata)
       if (publish) context.system.eventStream.publish(d)
-    case d @ DeleteSnapshots(processorId, criteria) ⇒
-      delete(processorId, criteria)
+    case d @ DeleteSnapshots(persistenceId, criteria) ⇒
+      delete(persistenceId, criteria)
       if (publish) context.system.eventStream.publish(d)
   }
 
@@ -55,10 +55,10 @@ trait SnapshotStore extends Actor {
   /**
    * Plugin API: asynchronously loads a snapshot.
    *
-   * @param processorId processor id.
+   * @param persistenceId processor id.
    * @param criteria selection criteria for loading.
    */
-  def loadAsync(processorId: String, criteria: SnapshotSelectionCriteria): Future[Option[SelectedSnapshot]]
+  def loadAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Option[SelectedSnapshot]]
 
   /**
    * Plugin API: asynchronously saves a snapshot.
@@ -86,9 +86,9 @@ trait SnapshotStore extends Actor {
   /**
    * Plugin API: deletes all snapshots matching `criteria`.
    *
-   * @param processorId processor id.
+   * @param persistenceId processor id.
    * @param criteria selection criteria for deleting.
    */
-  def delete(processorId: String, criteria: SnapshotSelectionCriteria)
+  def delete(persistenceId: String, criteria: SnapshotSelectionCriteria)
   //#snapshot-store-plugin-api
 }

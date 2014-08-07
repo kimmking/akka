@@ -5,14 +5,15 @@
 package akka.persistence.serialization
 
 import scala.language.existentials
-
 import com.google.protobuf._
-
 import akka.actor.{ ActorPath, ExtendedActorSystem }
 import akka.japi.Util.immutableSeq
 import akka.persistence._
 import akka.persistence.serialization.MessageFormats._
 import akka.serialization._
+import akka.persistence.AtLeastOnceDelivery.{ AtLeastOnceDeliverySnapshot ⇒ AtLeastOnceDeliverySnap }
+import akka.persistence.AtLeastOnceDelivery.UnconfirmedDelivery
+import scala.collection.immutable.VectorBuilder
 
 /**
  * Marker trait for all protobuf-serializable messages in `akka.persistence`.
@@ -32,6 +33,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
   val DeliveredByTransientChannelClass = classOf[DeliveredByChannel]
   val DeliveredByPersistentChannelClass = classOf[DeliveredByPersistentChannel]
   val DeliverClass = classOf[Deliver]
+  val AtLeastOnceDeliverySnapshotClass = classOf[AtLeastOnceDeliverySnap]
 
   def identifier: Int = 7
   def includeManifest: Boolean = true
@@ -52,6 +54,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
     case c: DeliveredByChannel           ⇒ deliveredMessageBuilder(c).build().toByteArray
     case c: DeliveredByPersistentChannel ⇒ deliveredMessageBuilder(c).build().toByteArray
     case d: Deliver                      ⇒ deliverMessageBuilder(d).build.toByteArray
+    case a: AtLeastOnceDeliverySnap      ⇒ atLeastOnceDeliverySnapshotBuilder(a).build.toByteArray
     case _                               ⇒ throw new IllegalArgumentException(s"Can't serialize object of type ${o.getClass}")
   }
 
@@ -69,6 +72,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
       case DeliveredByTransientChannelClass  ⇒ delivered(DeliveredMessage.parseFrom(bytes))
       case DeliveredByPersistentChannelClass ⇒ delivered(DeliveredMessage.parseFrom(bytes))
       case DeliverClass                      ⇒ deliver(DeliverMessage.parseFrom(bytes))
+      case AtLeastOnceDeliverySnapshotClass  ⇒ atLeastOnceDeliverySnapshot(AtLeastOnceDeliverySnapshot.parseFrom(bytes))
       case _                                 ⇒ throw new IllegalArgumentException(s"Can't deserialize object of type ${c}")
     }
   }
@@ -84,6 +88,33 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
     builder
   }
 
+  def atLeastOnceDeliverySnapshotBuilder(snap: AtLeastOnceDeliverySnap): AtLeastOnceDeliverySnapshot.Builder = {
+    val builder = AtLeastOnceDeliverySnapshot.newBuilder
+    builder.setCurrentDeliveryId(snap.currentDeliveryId)
+    snap.unconfirmedDeliveries.foreach { unconfirmed ⇒
+      val unconfirmedBuilder =
+        AtLeastOnceDeliverySnapshot.UnconfirmedDelivery.newBuilder.
+          setDeliveryId(unconfirmed.deliveryId).
+          setDestination(unconfirmed.destination.toString).
+          setPayload(persistentPayloadBuilder(unconfirmed.message.asInstanceOf[AnyRef]))
+      builder.addUnconfirmedDeliveries(unconfirmedBuilder)
+    }
+    builder
+  }
+
+  def atLeastOnceDeliverySnapshot(atLeastOnceDeliverySnapshot: AtLeastOnceDeliverySnapshot): AtLeastOnceDeliverySnap = {
+    import scala.collection.JavaConverters._
+    val unconfirmedDeliveries = new VectorBuilder[UnconfirmedDelivery]()
+    atLeastOnceDeliverySnapshot.getUnconfirmedDeliveriesList().iterator().asScala foreach { next ⇒
+      unconfirmedDeliveries += UnconfirmedDelivery(next.getDeliveryId, ActorPath.fromString(next.getDestination),
+        payload(next.getPayload))
+    }
+
+    AtLeastOnceDeliverySnap(
+      atLeastOnceDeliverySnapshot.getCurrentDeliveryId,
+      unconfirmedDeliveries.result())
+  }
+
   private def persistentMessageBatchBuilder(persistentBatch: PersistentBatch) = {
     val builder = PersistentMessageBatch.newBuilder
     persistentBatch.batch.
@@ -95,7 +126,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
   private def persistentMessageBuilder(persistent: PersistentRepr) = {
     val builder = PersistentMessage.newBuilder
 
-    if (persistent.processorId != Undefined) builder.setProcessorId(persistent.processorId)
+    if (persistent.persistenceId != Undefined) builder.setPersistenceId(persistent.persistenceId)
     if (persistent.confirmMessage != null) builder.setConfirmMessage(deliveredMessageBuilder(persistent.confirmMessage))
     if (persistent.confirmTarget != null) builder.setConfirmTarget(Serialization.serializedActorPath(persistent.confirmTarget))
     if (persistent.sender != null) builder.setSender(Serialization.serializedActorPath(persistent.sender))
@@ -115,7 +146,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
       val serializer = SerializationExtension(system).findSerializerFor(payload)
       val builder = PersistentPayload.newBuilder()
 
-      if (serializer.includeManifest) builder.setPayloadManifest((ByteString.copyFromUtf8(payload.getClass.getName)))
+      if (serializer.includeManifest) builder.setPayloadManifest(ByteString.copyFromUtf8(payload.getClass.getName))
 
       builder.setPayload(ByteString.copyFrom(serializer.toBinary(payload)))
       builder.setSerializerId(serializer.identifier)
@@ -139,7 +170,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
     builder.setDeliverySequenceNr(delivered.deliverySequenceNr)
 
     delivered match {
-      case c: DeliveredByChannel ⇒ builder.setProcessorId(c.processorId)
+      case c: DeliveredByChannel ⇒ builder.setPersistenceId(c.persistenceId)
       case _                     ⇒ builder
     }
   }
@@ -161,7 +192,7 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
     PersistentRepr(
       payload(persistentMessage.getPayload),
       persistentMessage.getSequenceNr,
-      if (persistentMessage.hasProcessorId) persistentMessage.getProcessorId else Undefined,
+      if (persistentMessage.hasPersistenceId) persistentMessage.getPersistenceId else Undefined,
       persistentMessage.getDeleted,
       persistentMessage.getRedeliveries,
       immutableSeq(persistentMessage.getConfirmsList),
@@ -184,9 +215,9 @@ class MessageSerializer(val system: ExtendedActorSystem) extends Serializer {
   private def delivered(deliveredMessage: DeliveredMessage): Delivered = {
     val channel = if (deliveredMessage.hasChannel) system.provider.resolveActorRef(deliveredMessage.getChannel) else null
 
-    if (deliveredMessage.hasProcessorId) {
+    if (deliveredMessage.hasPersistenceId) {
       DeliveredByChannel(
-        deliveredMessage.getProcessorId,
+        deliveredMessage.getPersistenceId,
         deliveredMessage.getChannelId,
         deliveredMessage.getPersistentSequenceNr,
         deliveredMessage.getDeliverySequenceNr,

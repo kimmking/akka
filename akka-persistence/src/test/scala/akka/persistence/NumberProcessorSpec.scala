@@ -22,7 +22,6 @@ object NumberProcessorSpec {
   case object GetNumber
 
   class NumberProcessorWithPersistentChannel(name: String) extends NamedProcessor(name) {
-    override def processorId = name
     var num = 0
 
     val channel = context.actorOf(PersistentChannel.props(channelId = "stable_id",
@@ -33,10 +32,10 @@ object NumberProcessorSpec {
       case Persistent(SetNumber(number), _) ⇒ num = number
       case Persistent(Add(number), _)       ⇒ num = num + number
       case Persistent(Subtract(number), _)  ⇒ num = num - number
-      case GetNumber                        ⇒ channel ! Deliver(Persistent(num), sender.path)
+      case GetNumber                        ⇒ channel ! Deliver(Persistent(num), sender().path)
       case p @ Persistent(DecrementAndGet, _) ⇒
         num = num - 1
-        channel ! Deliver(p.withPayload(num), sender.path)
+        channel ! Deliver(p.withPayload(num), sender().path)
     }
   }
 }

@@ -23,24 +23,24 @@ trait SyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
   private val publish = extension.settings.internal.publishPluginCommands
 
   final def receive = {
-    case WriteMessages(resequenceables, processor) ⇒
+    case WriteMessages(resequenceables, processor, actorInstanceId) ⇒
       Try(writeMessages(preparePersistentBatch(resequenceables))) match {
         case Success(_) ⇒
           processor ! WriteMessagesSuccessful
           resequenceables.foreach {
-            case p: PersistentRepr ⇒ processor.tell(WriteMessageSuccess(p), p.sender)
-            case r                 ⇒ processor.tell(LoopMessageSuccess(r.payload), r.sender)
+            case p: PersistentRepr ⇒ processor.tell(WriteMessageSuccess(p, actorInstanceId), p.sender)
+            case r                 ⇒ processor.tell(LoopMessageSuccess(r.payload, actorInstanceId), r.sender)
           }
         case Failure(e) ⇒
           processor ! WriteMessagesFailed(e)
           resequenceables.foreach {
-            case p: PersistentRepr ⇒ processor tell (WriteMessageFailure(p, e), p.sender)
-            case r                 ⇒ processor tell (LoopMessageSuccess(r.payload), r.sender)
+            case p: PersistentRepr ⇒ processor tell (WriteMessageFailure(p, e, actorInstanceId), p.sender)
+            case r                 ⇒ processor tell (LoopMessageSuccess(r.payload, actorInstanceId), r.sender)
           }
           throw e
       }
-    case r @ ReplayMessages(fromSequenceNr, toSequenceNr, max, processorId, processor, replayDeleted) ⇒
-      asyncReplayMessages(processorId, fromSequenceNr, toSequenceNr, max) { p ⇒
+    case r @ ReplayMessages(fromSequenceNr, toSequenceNr, max, persistenceId, processor, replayDeleted) ⇒
+      asyncReplayMessages(persistenceId, fromSequenceNr, toSequenceNr, max) { p ⇒
         if (!p.deleted || replayDeleted) processor.tell(ReplayedMessage(p), p.sender)
       } map {
         case _ ⇒ ReplayMessagesSuccess
@@ -49,8 +49,8 @@ trait SyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
       } pipeTo (processor) onSuccess {
         case _ if publish ⇒ context.system.eventStream.publish(r)
       }
-    case ReadHighestSequenceNr(fromSequenceNr, processorId, processor) ⇒
-      asyncReadHighestSequenceNr(processorId, fromSequenceNr).map {
+    case ReadHighestSequenceNr(fromSequenceNr, persistenceId, processor) ⇒
+      asyncReadHighestSequenceNr(persistenceId, fromSequenceNr).map {
         highest ⇒ ReadHighestSequenceNrSuccess(highest)
       } recover {
         case e ⇒ ReadHighestSequenceNrFailure(e)
@@ -68,13 +68,13 @@ trait SyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
         case Failure(e) ⇒
           requestorOption.foreach(_ ! DeleteMessagesFailure(e))
       }
-    case d @ DeleteMessagesTo(processorId, toSequenceNr, permanent) ⇒
-      Try(deleteMessagesTo(processorId, toSequenceNr, permanent)) match {
+    case d @ DeleteMessagesTo(persistenceId, toSequenceNr, permanent) ⇒
+      Try(deleteMessagesTo(persistenceId, toSequenceNr, permanent)) match {
         case Success(_) ⇒ if (publish) context.system.eventStream.publish(d)
         case Failure(e) ⇒
       }
-    case LoopMessage(message, processor) ⇒
-      processor forward LoopMessageSuccess(message)
+    case LoopMessage(message, processor, actorInstanceId) ⇒
+      processor forward LoopMessageSuccess(message, actorInstanceId)
   }
 
   //#journal-plugin-api
@@ -88,6 +88,7 @@ trait SyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
   /**
    * Plugin API: synchronously writes a batch of delivery confirmations to the journal.
    */
+  @deprecated("writeConfirmations will be removed, since Channels will be removed.", since = "2.3.4")
   def writeConfirmations(confirmations: immutable.Seq[PersistentConfirmation]): Unit
 
   /**
@@ -95,6 +96,7 @@ trait SyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
    * journal. If `permanent` is set to `false`, the persistent messages are marked as
    * deleted, otherwise they are permanently deleted.
    */
+  @deprecated("deleteMessages will be removed.", since = "2.3.4")
   def deleteMessages(messageIds: immutable.Seq[PersistentId], permanent: Boolean): Unit
 
   /**
@@ -102,6 +104,6 @@ trait SyncWriteJournal extends Actor with WriteJournalBase with AsyncRecovery {
    * (inclusive). If `permanent` is set to `false`, the persistent messages are marked
    * as deleted, otherwise they are permanently deleted.
    */
-  def deleteMessagesTo(processorId: String, toSequenceNr: Long, permanent: Boolean): Unit
+  def deleteMessagesTo(persistenceId: String, toSequenceNr: Long, permanent: Boolean): Unit
   //#journal-plugin-api
 }

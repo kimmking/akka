@@ -10,47 +10,11 @@ import akka.actor._
 import akka.persistence.JournalProtocol._
 
 /**
- * Instructs a [[View]] to update itself. This will run a single incremental message replay with all
- * messages from the corresponding processor's journal that have not yet been consumed by the view.
- * To update a view with messages that have been written after handling this request, another `Update`
- * request must be sent to the view.
- *
- * @param await if `true`, processing of further messages sent to the view will be delayed until the
- *              incremental message replay, triggered by this update request, completes. If `false`,
- *              any message sent to the view may interleave with replayed [[Persistent]] message
- *              stream.
- * @param replayMax maximum number of messages to replay when handling this update request. Defaults
- *                  to `Long.MaxValue` (i.e. no limit).
- */
-@SerialVersionUID(1L)
-final case class Update(await: Boolean = false, replayMax: Long = Long.MaxValue)
-
-case object Update {
-  /**
-   * Java API.
-   */
-  def create() =
-    Update()
-
-  /**
-   * Java API.
-   */
-  def create(await: Boolean) =
-    Update(await)
-
-  /**
-   * Java API.
-   */
-  def create(await: Boolean, replayMax: Long) =
-    Update(await, replayMax)
-}
-
-/**
  * A view replicates the persistent message stream of a processor. Implementation classes receive the
  * message stream as [[Persistent]] messages. These messages can be processed to update internal state
  * in order to maintain an (eventual consistent) view of the state of the corresponding processor. A
  * view can also run on a different node, provided that a replicated journal is used. Implementation
- * classes reference a processor by implementing `processorId`.
+ * classes reference a processor by implementing `persistenceId`.
  *
  * Views can also store snapshots of internal state by calling [[#saveSnapshot]]. The snapshots of a view
  * are independent of those of the referenced processor. During recovery, a saved snapshot is offered
@@ -68,6 +32,7 @@ case object Update {
  *
  * Views can also use channels to communicate with destinations in the same way as processors can do.
  */
+@deprecated("Use `akka.persistence.PersistentView` instead.", since = "2.3.4")
 trait View extends Actor with Recovery {
   import context.dispatcher
 
@@ -106,7 +71,7 @@ trait View extends Actor with Recovery {
       case r: Recover ⇒ // ignore
       case Update(awaitUpdate, replayMax) ⇒
         _currentState = replayStarted(await = awaitUpdate)
-        journal ! ReplayMessages(lastSequenceNr + 1L, Long.MaxValue, replayMax, processorId, self)
+        journal ! ReplayMessages(lastSequenceNr + 1L, Long.MaxValue, replayMax, persistenceId, self)
       case other ⇒ process(receive, other)
     }
   }
@@ -132,7 +97,7 @@ trait View extends Actor with Recovery {
     if (await) receiverStash.unstashAll()
   }
 
-  private val _viewId = extension.processorId(self)
+  private val _viewId = extension.persistenceId(self)
   private val viewSettings = extension.settings.view
 
   private var schedule: Option[Cancellable] = None
@@ -146,6 +111,11 @@ trait View extends Actor with Recovery {
    * Returns `viewId`.
    */
   def snapshotterId: String = viewId
+
+  /**
+   * Persistence id. Defaults to this persistent-actors's path and can be overridden.
+   */
+  override def persistenceId: String = processorId
 
   /**
    * If `true`, this view automatically updates itself with an interval specified by `autoUpdateInterval`.
@@ -196,6 +166,7 @@ trait View extends Actor with Recovery {
  *
  * @see [[View]]
  */
+@deprecated("Use `akka.persistence.UntypedPersistentView instead.", since = "2.3.4")
 abstract class UntypedView extends UntypedActor with View
 
 /**
@@ -203,4 +174,5 @@ abstract class UntypedView extends UntypedActor with View
  *
  * @see [[View]]
  */
+@deprecated("Use `akka.persistence.AbstractPersistentView` instead.", since = "2.3.4")
 abstract class AbstractView extends AbstractActor with View

@@ -31,6 +31,7 @@ The routing logic shipped with Akka are:
 * ``akka.routing.SmallestMailboxRoutingLogic``
 * ``akka.routing.BroadcastRoutingLogic``
 * ``akka.routing.ScatterGatherFirstCompletedRoutingLogic``
+* ``akka.routing.TailChoppingRoutingLogic``
 * ``akka.routing.ConsistentHashingRoutingLogic``
 
 We create the routees as ordinary child actors wrapped in ``ActorRefRoutee``. We watch
@@ -370,6 +371,40 @@ ScatterGatherFirstCompletedGroup defined in code:
 .. includecode:: code/docs/jrouting/RouterDocTest.java
    :include: paths,scatter-gather-group-2
 
+TailChoppingPool and TailChoppingGroup
+--------------------------------------
+
+The TailChoppingRouter will first send the message to one, randomly picked, routee
+and then after a small delay to to a second routee (picked randomly from the remaining routees) and so on.
+It waits for first reply it gets back and forwards it back to original sender. Other replies are discarded.
+
+The goal of this router is to decrease latency by performing redundant queries to multiple routees, assuming that
+one of the other actors may still be faster to respond than the initial one.
+
+This optimisation was described nicely in a blog post by Peter Bailis:
+`Doing redundant work to speed up distributed queries <http://www.bailis.org/blog/doing-redundant-work-to-speed-up-distributed-queries/>`_.
+
+TailChoppingPool defined in configuration:
+
+.. includecode:: ../scala/code/docs/routing/RouterDocSpec.scala#config-tail-chopping-pool
+
+.. includecode:: code/docs/jrouting/RouterDocTest.java#tail-chopping-pool-1
+
+TailChoppingPool defined in code:
+
+.. includecode:: code/docs/jrouting/RouterDocTest.java#tail-chopping-pool-2
+
+TailChoppingGroup defined in configuration:
+
+.. includecode:: ../scala/code/docs/routing/RouterDocSpec.scala#config-tail-chopping-group
+
+.. includecode:: code/docs/jrouting/RouterDocTest.java#tail-chopping-group-1
+
+TailChoppingGroup defined in code:
+
+.. includecode:: code/docs/jrouting/RouterDocTest.java
+   :include: paths,tail-chopping-group-2
+
 ConsistentHashingPool and ConsistentHashingGroup
 ------------------------------------------------
 
@@ -523,8 +558,8 @@ in a ``Broadcast`` message.
 
 .. includecode:: code/docs/jrouting/RouterDocTest.java#broadcastKill
 
-Managagement Messages
----------------------
+Management Messages
+-------------------
 
 * Sending ``akka.routing.GetRoutees`` to a router actor will make it send back its currently used routees
   in a ``akka.routing.Routees`` message.
@@ -536,7 +571,7 @@ Managagement Messages
 These management messages may be handled after other messages, so if you send ``AddRoutee`` immediately followed
 an ordinary message you are not guaranteed that the routees have been changed when the ordinary message
 is routed. If you need to know when the change has been applied you can send ``AddRoutee`` followed by ``GetRoutees``
-and when you receive the ``Routees`` reply you know that the preceeding change has been applied.
+and when you receive the ``Routees`` reply you know that the preceding change has been applied.
 
 .. _resizable-routers-java:
 

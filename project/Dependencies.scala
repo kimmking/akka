@@ -22,6 +22,7 @@ object Dependencies {
     // Compile
     val camelCore     = "org.apache.camel"            % "camel-core"                   % "2.13.0" exclude("org.slf4j", "slf4j-api") // ApacheV2
 
+    // when updating config version, update links ActorSystem ScalaDoc to link to the updated version
     val config        = "com.typesafe"                % "config"                       % "1.2.1"       // ApacheV2
     // mirrored in OSGi sample
     val netty         = "io.netty"                    % "netty"                        % "3.8.0.Final" // ApacheV2
@@ -55,7 +56,7 @@ object Dependencies {
       val commonsCodec = "commons-codec"               % "commons-codec"                % "1.7"              % "test" // ApacheV2
       val junit        = "junit"                       % "junit"                        % "4.10"             % "test" // Common Public License 1.0
       val logback      = "ch.qos.logback"              % "logback-classic"              % "1.0.13"           % "test" // EPL 1.0 / LGPL 2.1
-      val mockito      = "org.mockito"                 % "mockito-all"                  % "1.8.1"            % "test" // MIT
+      val mockito      = "org.mockito"                 % "mockito-all"                  % "1.9.5"            % "test" // MIT
       // changing the scalatest dependency must be reflected in akka-docs/rst/dev/multi-jvm-testing.rst
       // mirrored in OSGi sample
       val scalatest    = "org.scalatest"              %% "scalatest"                    % scalaTestVersion   % "test" // ApacheV2
@@ -69,7 +70,7 @@ object Dependencies {
       val karafExam    = "org.apache.karaf.tooling.exam" % "org.apache.karaf.tooling.exam.container" % "2.3.1" % "test" // ApacheV2
       // mirrored in OSGi sample
       val paxExam      = "org.ops4j.pax.exam"          % "pax-exam-junit4"              % "2.6.0"            % "test" // ApacheV2
-      val scalaXml     = "org.scala-lang.modules"      %% "scala-xml"                   % "1.0.1" % "test"
+      val scalaXml     = "org.scala-lang.modules"      %% "scala-xml"                   % "1.0.1"            % "test"
 
       // metrics, measurements, perf testing
       val metrics         = "com.codahale.metrics"        % "metrics-core"                 % "3.0.1"            % "test" // ApacheV2
@@ -102,6 +103,8 @@ object Dependencies {
 
   val persistence = Seq(levelDB, levelDBNative, protobuf, Test.scalatest, Test.junit, Test.commonsIo) ++
     scalaXmlDepencency
+
+  val persistenceTck = Seq(Test.scalatest.copy(configurations = Some("compile")), Test.junit.copy(configurations = Some("compile")))
 
   val kernel = Seq(Test.scalatest, Test.junit)
 

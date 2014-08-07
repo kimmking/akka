@@ -108,6 +108,8 @@ Methods returning:
     Any exception that was thrown during this call will be rethrown.
   * Any other type of value will use ``send-request-reply`` semantics, but *will* block to wait for an answer,
     throwing ``java.util.concurrent.TimeoutException`` if there was a timeout or rethrow any exception that was thrown during this call.
+    Note that due to the Java exception and reflection mechanisms, such a ``TimeoutException`` will be wrapped in a ``java.lang.reflect.UndeclaredThrowableException``
+    unless the interface method explicitly declares the ``TimeoutException`` as a thrown checked exception.
 
 Messages and immutability
 -------------------------
@@ -137,6 +139,11 @@ if needed. It will return ``None`` if a timeout occurs.
 
 This will block for as long as the timeout that was set in the ``Props`` of the Typed Actor,
 if needed. It will throw a ``java.util.concurrent.TimeoutException`` if a timeout occurs.
+Note that here, such a ``TimeoutException`` will be wrapped in a
+``java.lang.reflect.UndeclaredThrowableException`` by the Java reflection mechanism,
+because the interface method does not explicitly declare the ``TimeoutException`` as a thrown checked exception.
+To get the ``TimeoutException`` directly, declare ``throws java.util.concurrent.TimeoutException`` at the
+interface method.
 
 Request-reply-with-future message send
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -214,3 +221,21 @@ Lookup & Remoting
 Since ``TypedActors`` are backed by ``Akka Actors``, you can use ``typedActorOf`` to proxy ``ActorRefs`` potentially residing on remote nodes.
 
 .. includecode:: code/docs/actor/TypedActorDocTest.java#typed-actor-remote
+
+Typed Router pattern
+--------------------
+
+Sometimes you want to spread messages between multiple actors. The easiest way to achieve this in Akka is to use a :ref:`Router <routing-java>`,
+which can implement a specific routing logic, such as ``smallest-mailbox`` or ``consistent-hashing`` etc.
+
+Routers are not provided directly for typed actors, but it is really easy to leverage an untyped router and use a typed proxy in front of it.
+To showcase this let's create typed actors that assign themselves some random ``id``, so we know that in fact, the router has sent the message to different actors:
+
+.. includecode:: code/docs/actor/TypedActorDocTest.java#typed-router-types
+
+In order to round robin among a few instances of such actors, you can simply create a plain untyped router,
+and then facade it with a ``TypedActor`` like shown in the example below. This works because typed actors of course
+communicate using the same mechanisms as normal actors, and methods calls on them get transformed into message sends of ``MethodCall`` messages.
+
+.. includecode:: code/docs/actor/TypedActorDocTest.java#typed-router
+

@@ -6,23 +6,29 @@ import akka.actor._
 import akka.persistence._
 
 object ViewExample extends App {
-  class ExampleProcessor extends Processor {
-    override def processorId = "processor-5"
+  class ExamplePersistentActor extends PersistentActor {
+    override def persistenceId = "sample-id-4"
 
-    def receive = {
-      case Persistent(payload, sequenceNr) =>
-        println(s"processor received ${payload} (sequence nr = ${sequenceNr})")
+    var count = 1
+
+    def receiveCommand: Actor.Receive = {
+      case payload: String =>
+        println(s"persistentActor received ${payload} (nr = ${count})")
+        persist(payload + count) { evt =>
+          count += 1
+        }
+    }
+
+    def receiveRecover: Actor.Receive = {
+      case _: String => count += 1
     }
   }
 
-  class ExampleView extends View {
+  class ExampleView extends PersistentView {
     private var numReplicated = 0
 
-    override def processorId = "processor-5"
-    override def viewId = "view-5"
-
-    private val destination = context.actorOf(Props[ExampleDestination])
-    private val channel = context.actorOf(Channel.props("channel"))
+    override def persistenceId: String = "sample-id-4"
+    override def viewId = "sample-view-id-4"
 
     def receive = {
       case "snap" =>
@@ -30,28 +36,22 @@ object ViewExample extends App {
       case SnapshotOffer(metadata, snapshot: Int) =>
         numReplicated = snapshot
         println(s"view received snapshot offer ${snapshot} (metadata = ${metadata})")
-      case Persistent(payload, sequenceNr) =>
+      case payload if isPersistent =>
         numReplicated += 1
-        println(s"view received ${payload} (sequence nr = ${sequenceNr}, num replicated = ${numReplicated})")
-        channel ! Deliver(Persistent(s"replicated-${payload}"), destination.path)
+        println(s"view received persistent ${payload} (num replicated = ${numReplicated})")
+      case payload =>
+        println(s"view received not persitent ${payload}")
     }
-  }
 
-  class ExampleDestination extends Actor {
-    def receive = {
-      case cp @ ConfirmablePersistent(payload, sequenceNr, _) =>
-        println(s"destination received ${payload} (sequence nr = ${sequenceNr})")
-        cp.confirm()
-    }
   }
 
   val system = ActorSystem("example")
 
-  val processor = system.actorOf(Props(classOf[ExampleProcessor]))
+  val persistentActor = system.actorOf(Props(classOf[ExamplePersistentActor]))
   val view = system.actorOf(Props(classOf[ExampleView]))
 
   import system.dispatcher
 
-  system.scheduler.schedule(Duration.Zero, 2.seconds, processor, Persistent("scheduled"))
+  system.scheduler.schedule(Duration.Zero, 2.seconds, persistentActor, "scheduled")
   system.scheduler.schedule(Duration.Zero, 5.seconds, view, "snap")
 }

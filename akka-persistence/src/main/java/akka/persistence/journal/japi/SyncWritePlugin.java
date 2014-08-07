@@ -18,15 +18,19 @@ interface SyncWritePlugin {
     /**
      * Java API, Plugin API: synchronously writes a batch of delivery confirmations to
      * the journal.
+     * 
+     * @deprecated doWriteConfirmations will be removed, since Channels will be removed (since 2.3.4)
      */
-    void doWriteConfirmations(Iterable<PersistentConfirmation> confirmations);
+    @Deprecated void doWriteConfirmations(Iterable<PersistentConfirmation> confirmations);
 
     /**
      * Java API, Plugin API: synchronously deletes messages identified by `messageIds`
      * from the journal. If `permanent` is set to `false`, the persistent messages are
      * marked as deleted, otherwise they are permanently deleted.
+     * 
+     * @deprecated doDeleteMessages will be removed (since 2.3.4)
      */
-    void doDeleteMessages(Iterable<PersistentId> messageIds, boolean permanent);
+    @Deprecated void doDeleteMessages(Iterable<PersistentId> messageIds, boolean permanent);
 
     /**
      * Java API, Plugin API: synchronously deletes all persistent messages up to
@@ -35,6 +39,6 @@ interface SyncWritePlugin {
      *
      * @see AsyncRecoveryPlugin
      */
-    void doDeleteMessagesTo(String processorId, long toSequenceNr, boolean permanent);
+    void doDeleteMessagesTo(String persistenceId, long toSequenceNr, boolean permanent);
     //#sync-write-plugin-api
 }
